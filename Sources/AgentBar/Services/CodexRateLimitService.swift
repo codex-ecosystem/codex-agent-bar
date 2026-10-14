@@ -46,10 +46,10 @@ struct CodexRateLimitService {
             weekly: weekly,
             availableResetCredits: resetCredits.availableCount,
             resetCredits: resetCredits.credits,
-            lastUpdated: Date()
+            lastUpdated: Date(),
+            planType: buckets.compactMap { stringValue($0["planType"]) }.first
         )
 
-        printParsedQuota(snapshot)
         return snapshot
     }
 
@@ -224,45 +224,4 @@ struct CodexRateLimitService {
         }
     }
 
-    private func printParsedQuota(_ snapshot: QuotaSnapshot) {
-        let formatter = ISO8601DateFormatter()
-        let payload: [String: Any] = [
-            "fiveHour": snapshot.fiveHour.map { printableWindow($0, formatter: formatter) } ?? NSNull(),
-            "weekly": printableWindow(snapshot.weekly, formatter: formatter),
-            "availableResetCredits": snapshot.availableResetCredits ?? NSNull(),
-            "resetCredits": snapshot.resetCredits?.map { printableResetCredit($0, formatter: formatter) } ?? NSNull(),
-            "lastUpdated": formatter.string(from: snapshot.lastUpdated),
-        ]
-
-        if
-            let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]),
-            let text = String(data: data, encoding: .utf8) {
-            print("[AgentBar] Parsed quota data:\n\(text)")
-        }
-    }
-
-    private func printableWindow(_ window: QuotaWindow, formatter: ISO8601DateFormatter) -> [String: Any] {
-        [
-            "title": window.title,
-            "usedPercent": window.usedPercent,
-            "remainingPercent": window.remainingPercent,
-            "windowDurationMins": window.windowDurationMins ?? NSNull(),
-            "resetsAt": window.resetsAt.map { formatter.string(from: $0) } ?? NSNull(),
-        ]
-    }
-
-    private func printableResetCredit(
-        _ credit: RateLimitResetCredit,
-        formatter: ISO8601DateFormatter
-    ) -> [String: Any] {
-        [
-            "id": credit.id,
-            "resetType": credit.resetType,
-            "status": credit.status,
-            "grantedAt": credit.grantedAt.map { formatter.string(from: $0) } ?? NSNull(),
-            "expiresAt": credit.expiresAt.map { formatter.string(from: $0) } ?? NSNull(),
-            "title": credit.title ?? NSNull(),
-            "description": credit.detailText ?? NSNull(),
-        ]
-    }
 }

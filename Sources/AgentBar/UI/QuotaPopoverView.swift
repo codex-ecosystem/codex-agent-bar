@@ -11,6 +11,8 @@ struct QuotaPopoverView: View {
         VStack(spacing: 0) {
             AccountInfoHeader(
                 account: store.currentAccount,
+                fallbackPlanType: store.snapshot?.planType,
+                accountErrorMessage: store.accountErrorMessage,
                 isRefreshing: store.isLoading,
                 onRefresh: store.refresh
             )
@@ -130,7 +132,7 @@ struct QuotaPopoverView: View {
     }
 
     private var displaysFiveHourQuota: Bool {
-        store.currentAccount != nil && store.currentAccount?.isProPlan != true
+        store.displaysFiveHourQuota
     }
 
     private var popoverHeight: CGFloat {
@@ -407,6 +409,8 @@ private struct AppUpdateFooterButton: View {
 
 private struct AccountInfoHeader: View {
     let account: CodexAccount?
+    let fallbackPlanType: String?
+    let accountErrorMessage: String?
     let isRefreshing: Bool
     let onRefresh: () -> Void
 
@@ -427,6 +431,15 @@ private struct AccountInfoHeader: View {
 
             Spacer(minLength: 8)
 
+            if let accountErrorMessage {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .help("\(I18n.current.accountInfoUnavailable): \(accountErrorMessage)")
+                    .accessibilityLabel(I18n.current.accountInfoUnavailable)
+                    .accessibilityHint(accountErrorMessage)
+            }
+
             RefreshButton(isRefreshing: isRefreshing, action: onRefresh)
 
             RoleBadge(role: displayRole)
@@ -440,7 +453,7 @@ private struct AccountInfoHeader: View {
     }
 
     private var displayRole: String {
-        capitalizedFirstLetter(displayValue(account?.planType))
+        capitalizedFirstLetter(displayValue(account?.planType ?? fallbackPlanType))
     }
 
     private func displayValue(_ value: String?) -> String {
@@ -619,6 +632,7 @@ private struct ResetCreditsHoverMenuPresenter: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: ResetCreditsHoverAnchorView, coordinator: ()) {
         nsView.dismissMenu()
+        nsView.onHoverChanged = nil
     }
 }
 
@@ -632,6 +646,7 @@ private final class ResetCreditsHoverAnchorView: NSView {
     private var pointerTrackingTimer: Timer?
     private var pointerOutsideSince: Date?
     private var isSchedulingPresentation = false
+    private var presentationWorkItem: DispatchWorkItem?
     private var scheduledPresentationRequiresPointerInside = true
     private var scheduledPresentationTracksPointer = true
 
@@ -652,6 +667,13 @@ private final class ResetCreditsHoverAnchorView: NSView {
 
     override var acceptsFirstResponder: Bool {
         true
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            dismissMenu()
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     func configure(availableCount: Int?, credits: [RateLimitResetCredit]?) {
@@ -705,9 +727,11 @@ private final class ResetCreditsHoverAnchorView: NSView {
         scheduledPresentationRequiresPointerInside = requiresPointerInside
         scheduledPresentationTracksPointer = tracksPointer
         let delay = requiresPointerInside ? 0.12 : 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        let workItem = DispatchWorkItem { [weak self] in
             self?.presentMenuIfPointerIsStillInside()
         }
+        presentationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -715,6 +739,8 @@ private final class ResetCreditsHoverAnchorView: NSView {
     }
 
     func dismissMenu() {
+        presentationWorkItem?.cancel()
+        presentationWorkItem = nil
         isSchedulingPresentation = false
         stopPointerMonitoring()
         presentedMenu?.cancelTrackingWithoutAnimation()
@@ -722,6 +748,7 @@ private final class ResetCreditsHoverAnchorView: NSView {
     }
 
     private func presentMenuIfPointerIsStillInside() {
+        presentationWorkItem = nil
         isSchedulingPresentation = false
 
         guard window != nil, !scheduledPresentationRequiresPointerInside || isPointerInside else {
@@ -750,13 +777,11 @@ private final class ResetCreditsHoverAnchorView: NSView {
         stopPointerMonitoring()
         pointerOutsideSince = nil
 
-        let timer = Timer(
-            timeInterval: 0.05,
-            target: self,
-            selector: #selector(pollPointerLocation(_:)),
-            userInfo: nil,
-            repeats: true
-        )
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.pollPointerLocation()
+            }
+        }
         pointerTrackingTimer = timer
         RunLoop.main.add(timer, forMode: .eventTracking)
         RunLoop.main.add(timer, forMode: .common)
@@ -768,7 +793,7 @@ private final class ResetCreditsHoverAnchorView: NSView {
         pointerOutsideSince = nil
     }
 
-    @objc private func pollPointerLocation(_ timer: Timer) {
+    private func pollPointerLocation() {
         let pointerIsInsideAnchor = isPointerInside
         onHoverChanged?(pointerIsInsideAnchor)
 

@@ -48,9 +48,9 @@ final class MenuBarQuotaView: NSControl {
         setup()
     }
 
-    func update(snapshot: QuotaSnapshot?, account: CodexAccount?, statusMessage: String) {
+    func update(snapshot: QuotaSnapshot?, displaysFiveHourQuota: Bool, statusMessage: String) {
         toolTip = statusMessage
-        displaysFiveHourQuota = account != nil && account?.isProPlan != true
+        self.displaysFiveHourQuota = displaysFiveHourQuota
         fiveHourRow?.isHidden = !displaysFiveHourQuota
 
         if let snapshot {

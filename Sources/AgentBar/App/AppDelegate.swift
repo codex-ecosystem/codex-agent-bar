@@ -1,5 +1,7 @@
 import AppKit
 import Combine
+import Darwin
+import OSLog
 import SwiftUI
 
 @MainActor
@@ -13,20 +15,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var globalEventMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
     private var lastShownCLIUpgradeAlertMessage: String?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    private let logger = Logger(subsystem: "com.lonewolfyx.AgentBar", category: "Lifecycle")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         NSApp.applicationIconImage = AppIcon.image()
         updateCoordinator.start()
         configureStatusItem()
-        configurePopover()
         bindStore()
+        bindSystemLifecycle()
+        monitorMemoryPressure()
+        logger.info("AgentBar started on \(ProcessInfo.processInfo.operatingSystemVersionString, privacy: .public)")
         updateMenuBarTitle()
         store.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
+        closePopover(nil)
+        cancellables.removeAll()
         store.stop()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Keep the run loop alive until the owned child has received its termination signal.
+        store.stop {
+            Task { @MainActor in
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+
+    private func bindSystemLifecycle() {
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.closePopover(nil)
+                self?.store.suspend(for: .systemSleep)
+            }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.store.resume(after: .systemSleep)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func monitorMemoryPressure() {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let event = self.memoryPressureSource?.data else {
+                    return
+                }
+
+                if event.contains(.critical) || event.contains(.warning) {
+                    let isCritical = event.contains(.critical)
+                    let level = isCritical ? "critical" : "warning"
+                    let action = isCritical ? "pausing quota refresh" : "releasing idle resources"
+                    let footprint = self.physicalMemoryFootprint().map { "\($0 / 1_048_576) MiB" } ?? "unavailable"
+                    self.logger.notice("System memory pressure: \(level, privacy: .public); \(action, privacy: .public). AgentBar physical footprint: \(footprint, privacy: .public)")
+                    self.closePopover(nil)
+                    if isCritical {
+                        self.store.suspend(for: .memoryPressure)
+                    } else {
+                        self.store.releaseIdleResources()
+                    }
+                } else if event.contains(.normal) {
+                    self.logger.info("System memory pressure returned to normal")
+                    self.store.resume(after: .memoryPressure)
+                }
+            }
+        }
+        memoryPressureSource = source
+        source.resume()
+    }
+
+    private func physicalMemoryFootprint() -> UInt64? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? info.phys_footprint : nil
     }
 
     private func configureStatusItem() {
@@ -63,7 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let popover = NSPopover()
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentSize = NSSize(width: 320, height: 520)
+        popover.contentSize = NSSize(width: 320, height: store.displaysFiveHourQuota ? 624 : 520)
         popover.contentViewController = VisualEffectHostingController(
             rootView: QuotaPopoverView(
                 store: store,
@@ -108,10 +186,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         store.$currentAccount
             .receive(on: RunLoop.main)
-            .sink { [weak self] account in
+            .sink { [weak self] _ in
                 self?.updateMenuBarTitle()
-                let usesCompactQuotaLayout = account == nil || account?.isProPlan == true
-                self?.popover?.contentSize.height = usesCompactQuotaLayout ? 520 : 624
             }
             .store(in: &cancellables)
 
@@ -130,9 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         menuBarView.update(
             snapshot: store.snapshot,
-            account: store.currentAccount,
+            displaysFiveHourQuota: store.displaysFiveHourQuota,
             statusMessage: store.statusMessage
         )
+
+        popover?.contentSize.height = store.displaysFiveHourQuota ? 624 : 520
 
         let preferredWidth = menuBarView.preferredWidth
         if statusItem?.length != preferredWidth {
@@ -161,6 +239,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc private func togglePopover(_ sender: NSControl) {
+        if popover == nil {
+            configurePopover()
+        }
+
         guard let popover else {
             return
         }
@@ -176,6 +258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         removeOutsideClickMonitors()
+        // Hidden SwiftUI charts and tracking views should not observe every background refresh.
+        popover?.contentViewController = nil
+        popover = nil
     }
 
     private func closePopover(_ sender: Any?) {

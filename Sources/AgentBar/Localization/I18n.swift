@@ -68,6 +68,19 @@ enum I18n {
             }
         }
 
+        var accountInfoUnavailable: String {
+            switch I18n.language {
+            case .simplifiedChinese:
+                return "账号信息暂不可用"
+            case .english:
+                return "Account info unavailable"
+            }
+        }
+
+        func quotaLoadedWithAccountWarning(_ message: String) -> String {
+            "\(quotaLoaded) \(accountInfoUnavailable): \(message)"
+        }
+
         func appServerStartFailed(_ message: String) -> String {
             switch I18n.language {
             case .simplifiedChinese:
@@ -155,6 +168,33 @@ enum I18n {
                 return "等待 app-server 初始化超过 \(seconds) 秒。"
             case .english:
                 return "Timed out waiting \(seconds) seconds for app-server initialization."
+            }
+        }
+
+        func rpcRequestTimedOut(method: String, seconds: Int) -> String {
+            switch I18n.language {
+            case .simplifiedChinese:
+                return "RPC 请求 \(method) 在 \(seconds) 秒内未响应。"
+            case .english:
+                return "RPC request \(method) did not respond within \(seconds) seconds."
+            }
+        }
+
+        func rpcResponseExceededLimit(megabytes: Int) -> String {
+            switch I18n.language {
+            case .simplifiedChinese:
+                return "app-server 返回了超过 \(megabytes) MB 的未分帧响应。"
+            case .english:
+                return "app-server returned an unframed response larger than \(megabytes) MB."
+            }
+        }
+
+        var tooManyRPCRequests: String {
+            switch I18n.language {
+            case .simplifiedChinese:
+                return "等待响应的 RPC 请求过多。"
+            case .english:
+                return "Too many RPC requests are waiting for a response."
             }
         }
 

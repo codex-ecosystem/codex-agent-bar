@@ -27,5 +27,10 @@ let package = Package(
                 ]),
             ]
         ),
+        .testTarget(
+            name: "AgentBarTests",
+            dependencies: ["AgentBar"],
+            resources: [.copy("Fixtures")]
+        ),
     ]
 )

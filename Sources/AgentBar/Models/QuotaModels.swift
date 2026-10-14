@@ -26,6 +26,7 @@ struct QuotaSnapshot: Sendable {
     var availableResetCredits: Int?
     var resetCredits: [RateLimitResetCredit]?
     var lastUpdated: Date
+    var planType: String? = nil
 
     func preservingResetCreditDetails(from previous: QuotaSnapshot?) -> QuotaSnapshot {
         guard
