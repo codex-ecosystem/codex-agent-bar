@@ -2,17 +2,30 @@ import AppKit
 import Foundation
 
 struct CodexCLIResolver {
+    struct ResolvedCLI: Sendable {
+        let path: String
+        let environment: [String: String]
+    }
+
     private static let codexBundleIdentifier = "com.openai.codex"
     private static let bundledAppNames = ["ChatGPT.app", "Codex.app"]
     private static let bundledCLIComponents = ["Contents", "Resources", "codex"]
+
+    static func resolveForLaunch(
+        environment: [String: String] = ShellEnvironmentResolver.shared.resolve()
+    ) -> ResolvedCLI? {
+        guard let path = resolve(environmentPath: environment["PATH"]) else {
+            return nil
+        }
+        return ResolvedCLI(path: path, environment: environment)
+    }
 
     static func resolve(
         fileManager: FileManager = .default,
         environmentPath: String? = ProcessInfo.processInfo.environment["PATH"],
         homeDirectory: URL? = nil,
         registeredApplicationURL: URL? = registeredCodexApplicationURL(),
-        applicationDirectories: [URL]? = nil,
-        fallbackBinDirectories: [URL]? = nil
+        applicationDirectories: [URL]? = nil
     ) -> String? {
         let homeDirectory = homeDirectory ?? fileManager.homeDirectoryForCurrentUser
         let applicationDirectories = applicationDirectories ?? [
@@ -34,27 +47,8 @@ struct CodexCLIResolver {
             .split(separator: ":")
             .map { URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("codex") }
 
-        let fallbackBinDirectories = fallbackBinDirectories ?? [
-            URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true),
-            URL(fileURLWithPath: "/usr/local/bin", isDirectory: true),
-        ]
-        let fallbackCandidates = fallbackBinDirectories.map { $0.appendingPathComponent("codex") }
-
-        let nvmRoot = homeDirectory
-            .appendingPathComponent(".nvm", isDirectory: true)
-            .appendingPathComponent("versions", isDirectory: true)
-            .appendingPathComponent("node", isDirectory: true)
-        let nvmCandidates = ((try? fileManager.contentsOfDirectory(atPath: nvmRoot.path)) ?? [])
-            .sorted(by: >)
-            .map {
-                nvmRoot
-                    .appendingPathComponent($0, isDirectory: true)
-                    .appendingPathComponent("bin", isDirectory: true)
-                    .appendingPathComponent("codex")
-            }
-
         var visitedPaths = Set<String>()
-        for candidate in bundledCandidates + pathCandidates + fallbackCandidates + nvmCandidates {
+        for candidate in pathCandidates + bundledCandidates {
             let path = candidate.standardizedFileURL.path
             guard visitedPaths.insert(path).inserted else {
                 continue

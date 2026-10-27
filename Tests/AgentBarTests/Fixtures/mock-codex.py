@@ -69,6 +69,8 @@ try:
             respond(request, {"summary": {"lifetimeTokens": 100}, "dailyUsageBuckets": []})
         elif method == "request-counts":
             respond(request, request_counts)
+        elif method == "environment":
+            respond(request, {"value": os.environ.get("AGENTBAR_TEST_VALUE"), "path": os.environ.get("PATH")})
         elif method == "notify-rate-limits":
             print(json.dumps({"method": "account/rateLimits/updated", "params": {}}), flush=True)
             respond(request, {})

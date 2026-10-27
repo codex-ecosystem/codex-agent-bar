@@ -37,7 +37,9 @@ final class ResourceLifetimeTests {
         configuration.requestTimeout = 2
         configuration.terminationGracePeriod = 0.1
         configure(&configuration)
-        let client = CodexAppServerClient(configuration: configuration, resolveExecutablePath: { executable.path })
+        let client = CodexAppServerClient(configuration: configuration, resolveCLI: {
+            CodexCLIResolver.ResolvedCLI(path: executable.path, environment: ProcessInfo.processInfo.environment)
+        })
         clients.append(client)
         return client
     }
