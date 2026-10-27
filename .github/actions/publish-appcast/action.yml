@@ -1,0 +1,34 @@
+name: Publish Sparkle appcast
+description: Commit a generated Sparkle feed to the repository main branch when it changes.
+inputs:
+  appcast-path:
+    description: Generated appcast path outside the checkout.
+    required: true
+  release-tag:
+    description: GitHub release tag used in the commit message.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Publish appcast
+      shell: bash
+      env:
+        APPCAST_PATH: ${{ inputs.appcast-path }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+      run: |
+        set -euo pipefail
+
+        git fetch origin main
+        git checkout -B main origin/main
+        cp "$APPCAST_PATH" appcast.xml
+
+        if git diff --quiet -- appcast.xml; then
+          echo "appcast.xml is already current."
+          exit 0
+        fi
+
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add appcast.xml
+        git commit -m "chore: update appcast for $RELEASE_TAG"
+        git push origin HEAD:main

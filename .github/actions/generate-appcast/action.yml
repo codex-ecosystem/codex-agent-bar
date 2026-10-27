@@ -1,0 +1,43 @@
+name: Generate Sparkle appcast
+description: Generate and verify the Sparkle feed for a built release DMG.
+inputs:
+  dmg-path:
+    description: Built DMG path.
+    required: true
+  dmg-name:
+    description: Built DMG filename.
+    required: true
+  release-tag:
+    description: GitHub release tag.
+    required: true
+  sparkle-private-key:
+    description: Sparkle private signing key.
+    required: true
+outputs:
+  path:
+    description: Generated appcast path.
+    value: ${{ steps.generate.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - name: Generate and verify appcast
+      id: generate
+      shell: bash
+      env:
+        DMG_PATH: ${{ inputs.dmg-path }}
+        DMG_NAME: ${{ inputs.dmg-name }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+        SPARKLE_PRIVATE_KEY: ${{ inputs.sparkle-private-key }}
+      run: |
+        set -euo pipefail
+
+        ./scripts/update-appcast.sh \
+          --dmg "$DMG_PATH" \
+          --output "$RUNNER_TEMP/appcast.xml" \
+          --tag "$RELEASE_TAG"
+
+        grep -F 'sparkle:edSignature=' "$RUNNER_TEMP/appcast.xml"
+        grep -F "releases/download/$RELEASE_TAG/$DMG_NAME" \
+          "$RUNNER_TEMP/appcast.xml"
+
+        echo "path=$RUNNER_TEMP/appcast.xml" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,19 @@
+cask "codex-agent-bar" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "@DOWNLOAD_URL@"
+  name "Codex Agent Bar"
+  desc "Menu bar app for monitoring Codex quota"
+  homepage "https://github.com/codex-ecosystem/codex-agent-bar"
+
+  auto_updates true
+  depends_on arch: :arm64
+  depends_on macos: :ventura
+
+  app "AgentBar.app"
+
+  uninstall quit: "com.lonewolfyx.AgentBar"
+
+  zap trash: "~/Library/Preferences/com.lonewolfyx.AgentBar.plist"
+end

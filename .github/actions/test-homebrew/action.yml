@@ -1,0 +1,13 @@
+name: Test Homebrew release automation
+description: Set up Node.js 24 and run the repository Homebrew release tests.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version: '24'
+    - name: Test Homebrew publishing
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: node --test "$ACTION_PATH/../publish-homebrew/release.test.mts"

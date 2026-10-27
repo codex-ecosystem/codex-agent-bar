@@ -9,6 +9,17 @@
 
 Codex Agent Bar is a lightweight macOS menu bar app for monitoring your Codex quota at a glance. It connects to the local `codex app-server`, reads the current account rate limit data, and displays the remaining quota directly in the system menu bar.
 
+## Installation
+
+On Apple Silicon with macOS 13 or later:
+
+```sh
+brew install --cask codex-ecosystem/tap/codex-agent-bar
+open -a AgentBar
+```
+
+Agent Bar needs an available, signed-in Codex installation.
+
 ## Features
 
 - Shows Codex quota in the macOS menu bar.

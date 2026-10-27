@@ -1,0 +1,112 @@
+name: Build and verify DMG
+description: Build Agent Bar and verify its app bundle, code signature, and Sparkle configuration.
+inputs:
+  version:
+    description: Release version without the v prefix.
+    required: true
+  sparkle-public-key:
+    description: Expected Sparkle public signing key.
+    required: true
+  sparkle-check-interval:
+    description: Sparkle update interval in seconds.
+    default: '3600'
+outputs:
+  path:
+    description: Built DMG path.
+    value: ${{ steps.dmg.outputs.path }}
+  name:
+    description: Built DMG filename.
+    value: ${{ steps.dmg.outputs.name }}
+  app-name:
+    description: Application bundle name without the .app suffix.
+    value: ${{ steps.dmg.outputs.app_name }}
+runs:
+  using: composite
+  steps:
+    - name: Build DMG
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ inputs.version }}
+        SPARKLE_PUBLIC_ED_KEY: ${{ inputs.sparkle-public-key }}
+        SPARKLE_CHECK_INTERVAL: ${{ inputs.sparkle-check-interval }}
+        SIGN_APP: '1'
+        CODE_SIGN_IDENTITY: '-'
+      run: ./scripts/build-dmg.sh --version "$RELEASE_VERSION"
+
+    - name: Locate DMG
+      id: dmg
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ inputs.version }}
+      run: |
+        shopt -s nullglob
+        dmgs=(dist/*.dmg)
+
+        if [ "${#dmgs[@]}" -ne 1 ]; then
+          printf 'Expected exactly one DMG in dist, found %s:\n' "${#dmgs[@]}" >&2
+          printf ' - %s\n' "${dmgs[@]:-<none>}" >&2
+          exit 1
+        fi
+
+        if [ ! -s "${dmgs[0]}" ]; then
+          echo "DMG is empty: ${dmgs[0]}" >&2
+          exit 1
+        fi
+
+        dmg_path="${dmgs[0]}"
+        dmg_name="$(basename "$dmg_path")"
+        app_name="${dmg_name%-$RELEASE_VERSION.dmg}"
+
+        echo "path=$dmg_path" >> "$GITHUB_OUTPUT"
+        echo "name=$dmg_name" >> "$GITHUB_OUTPUT"
+        echo "app_name=$app_name" >> "$GITHUB_OUTPUT"
+        ls -lh "$dmg_path"
+
+    - name: Verify DMG contents
+      shell: bash
+      env:
+        DMG_PATH: ${{ steps.dmg.outputs.path }}
+        APP_NAME: ${{ steps.dmg.outputs.app_name }}
+        SPARKLE_PUBLIC_ED_KEY: ${{ inputs.sparkle-public-key }}
+        SPARKLE_CHECK_INTERVAL: ${{ inputs.sparkle-check-interval }}
+      run: |
+        set -euo pipefail
+
+        dmg_path="$DMG_PATH"
+        mount_dir="$(mktemp -d)"
+
+        cleanup() {
+          hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
+          rm -rf "$mount_dir"
+        }
+        trap cleanup EXIT
+
+        hdiutil verify "$dmg_path"
+        hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg_path" >/dev/null
+
+        app_path="$mount_dir/$APP_NAME.app"
+        if [ ! -d "$app_path" ]; then
+          echo "Expected app bundle not found: $app_path" >&2
+          echo "Mounted DMG contents:" >&2
+          find "$mount_dir" -maxdepth 1 -mindepth 1 -print >&2
+          exit 1
+        fi
+
+        codesign --verify --deep --strict --verbose=4 "$app_path"
+        codesign -dv --verbose=4 "$app_path"
+
+        bundled_public_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app_path/Contents/Info.plist")"
+        if [ "$bundled_public_key" != "$SPARKLE_PUBLIC_ED_KEY" ]; then
+          echo "Bundled SUPublicEDKey does not match SPARKLE_PUBLIC_ED_KEY" >&2
+          exit 1
+        fi
+
+        bundled_check_interval="$(/usr/libexec/PlistBuddy -c 'Print :SUScheduledCheckInterval' "$app_path/Contents/Info.plist")"
+        if [ "$bundled_check_interval" != "${SPARKLE_CHECK_INTERVAL:-3600}" ]; then
+          echo "Bundled SUScheduledCheckInterval is not the expected value" >&2
+          exit 1
+        fi
+
+        if ! spctl --assess --type execute --verbose=4 "$app_path"; then
+          echo "::warning::Gatekeeper rejected this app because the release is ad-hoc signed and not notarized."
+        fi
