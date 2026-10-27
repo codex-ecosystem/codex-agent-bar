@@ -3,6 +3,12 @@ import Darwin
 import Foundation
 
 struct CodexCLIResolver {
+    struct ResolvedCLI: Sendable {
+        let executablePath: String
+        // Bundled installations use the app's environment; shell lookups retain their exact PATH.
+        let environmentPath: String?
+    }
+
     private static let codexBundleIdentifier = "com.openai.codex"
     private static let bundledAppNames = ["ChatGPT.app", "Codex.app"]
     private static let bundledCLIComponents = [
@@ -18,15 +24,15 @@ struct CodexCLIResolver {
         applicationDirectories: [URL]? = nil,
         shellExecutableURL: URL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"),
         shellLookupTimeout: TimeInterval = 3
-    ) -> String? {
+    ) -> ResolvedCLI? {
         var isDirectory: ObjCBool = false
-        if let path = shellCodexPath(
+        if let cli = resolveShellCLI(
             shellExecutableURL: shellExecutableURL,
             environmentPath: environmentPath,
             timeout: shellLookupTimeout
-        ), fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
-           !isDirectory.boolValue, fileManager.isExecutableFile(atPath: path) {
-            return path
+        ), fileManager.fileExists(atPath: cli.executablePath, isDirectory: &isDirectory),
+           !isDirectory.boolValue, fileManager.isExecutableFile(atPath: cli.executablePath) {
+            return cli
         }
 
         let homeDirectory = homeDirectory ?? fileManager.homeDirectoryForCurrentUser
@@ -53,23 +59,24 @@ struct CodexCLIResolver {
             }
 
             if fileManager.isExecutableFile(atPath: path) {
-                return path
+                return ResolvedCLI(executablePath: path, environmentPath: nil)
             }
         }
 
         return nil
     }
 
-    private static func shellCodexPath(
+    private static func resolveShellCLI(
         shellExecutableURL: URL,
         environmentPath: String?,
         timeout: TimeInterval
-    ) -> String? {
+    ) -> ResolvedCLI? {
         let process = Process()
         let outputPipe = Pipe()
         process.executableURL = shellExecutableURL
         // Finder launches do not inherit the PATH set by login and interactive shell profiles.
-        process.arguments = ["-ilc", "/usr/bin/which codex"]
+        // Keep the PATH that found the CLI: package-manager shims may need node from another directory.
+        process.arguments = ["-ilc", "/usr/bin/which codex && /usr/bin/printf '\\0%s\\0' \"$PATH\""]
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = environmentPath
         process.environment = environment
@@ -121,13 +128,16 @@ struct CodexCLIResolver {
             }
         }
 
-        guard process.terminationStatus == 0,
-              let path = String(data: output, encoding: .utf8)?
+        // NUL framing preserves spaces and newlines in PATH and separates shell startup/logout output.
+        let fields = output.split(separator: 0, omittingEmptySubsequences: false)
+        guard process.terminationStatus == 0, fields.count >= 3,
+              let path = String(bytes: fields[0], encoding: .utf8)?
                 .split(whereSeparator: \.isNewline).last.map(String.init),
-              path.hasPrefix("/") else {
+              path.hasPrefix("/"),
+              let environmentPath = String(bytes: fields[1], encoding: .utf8) else {
             return nil
         }
-        return path
+        return ResolvedCLI(executablePath: path, environmentPath: environmentPath)
     }
 
     private static func registeredCodexApplicationURL() -> URL? {

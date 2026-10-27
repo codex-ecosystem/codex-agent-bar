@@ -37,7 +37,7 @@ final class CodexCLIResolverTests {
             applicationDirectories: [directory.appendingPathComponent("Applications")],
             shellExecutableURL: shell ?? directory.appendingPathComponent("missing-shell"),
             shellLookupTimeout: timeout
-        )
+        )?.executablePath
     }
 
     @Test func discoversCLIFromLoginAndInteractiveShellProfiles() throws {
@@ -57,9 +57,29 @@ final class CodexCLIResolverTests {
         let codex = try makeFile("custom/bin/codex")
         let inheritedCodex = try makeFile("inherited/bin/codex")
         try makeFile("Applications/Codex.app/Contents/Resources/codex")
-        let shell = try makeFile("shell", contents: "#!/bin/sh\nprintf '%s\\n' 'startup message' '\(codex.path)'\n")
+        let shell = try makeFile("shell", contents: "#!/bin/sh\nprintf '%s\\n' 'startup message'\nprintf '%s\\n\\000%s\\000' '\(codex.path)' '/usr/bin:/bin'\n")
 
         #expect(resolve(shell: shell, environmentPath: inheritedCodex.deletingLastPathComponent().path) == codex.path)
+    }
+
+    @Test func retainsShellPathDespiteProfileOutput() throws {
+        let codex = try makeFile("Library/pnpm/codex")
+        let shellPath = "/custom node/bin:/directory\nwith newline:/usr/bin:/bin"
+        let shell = try makeFile("shell", contents: """
+        #!/bin/sh
+        printf '%s\\n' 'startup message'
+        printf '%s\\n\\000%s\\000' '\(codex.path)' '\(shellPath)'
+        printf '%s\\n' 'logout message'
+        """)
+        let cli = try #require(CodexCLIResolver.resolve(
+            environmentPath: "/usr/bin:/bin",
+            registeredApplicationURL: nil,
+            applicationDirectories: [],
+            shellExecutableURL: shell
+        ))
+
+        #expect(cli.executablePath == codex.path)
+        #expect(cli.environmentPath == shellPath)
     }
 
     @Test(arguments: ["missing", "relative", "non-executable", "directory", "nonzero-exit"])
@@ -79,7 +99,7 @@ final class CodexCLIResolverTests {
             candidate = directory.appendingPathComponent("missing/codex").path
         }
         let exitCode = result == "nonzero-exit" ? 1 : 0
-        let shell = try makeFile("shell", contents: "#!/bin/sh\nprintf '%s\\n' '\(candidate)'\nexit \(exitCode)\n")
+        let shell = try makeFile("shell", contents: "#!/bin/sh\nprintf '%s\\n\\000%s\\000' '\(candidate)' '/usr/bin:/bin'\nexit \(exitCode)\n")
 
         #expect(resolve(shell: shell) == fallback.path)
     }

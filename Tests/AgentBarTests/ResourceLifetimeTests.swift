@@ -37,7 +37,9 @@ final class ResourceLifetimeTests {
         configuration.requestTimeout = 2
         configuration.terminationGracePeriod = 0.1
         configure(&configuration)
-        let client = CodexAppServerClient(configuration: configuration, resolveExecutablePath: { executable.path })
+        let client = CodexAppServerClient(configuration: configuration, resolveCLI: {
+            CodexCLIResolver.ResolvedCLI(executablePath: executable.path, environmentPath: nil)
+        })
         clients.append(client)
         return client
     }
@@ -202,6 +204,55 @@ final class ResourceLifetimeTests {
         try await start(client)
         let childPID = try await pid(client)
         #expect(childPID > 0)
+    }
+
+    @Test func pnpmShimUsesShellPathForVersionProbeAndAppServer() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        fixtureDirectories.append(directory)
+        let pnpmBin = directory.appendingPathComponent("Library/pnpm")
+        let nodeBin = directory.appendingPathComponent("node runtime/bin")
+        let profiles = directory.appendingPathComponent("profiles")
+        for folder in [pnpmBin, nodeBin, profiles] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let fixture = try #require(Bundle.module.url(forResource: "mock-codex", withExtension: "py", subdirectory: "Fixtures"))
+        let codex = pnpmBin.appendingPathComponent("codex")
+        let node = nodeBin.appendingPathComponent("node")
+        let shell = directory.appendingPathComponent("shell")
+        let shellPath = "\(nodeBin.path):\(pnpmBin.path):/usr/bin:/bin"
+        let scripts = [
+            codex: "#!/bin/sh\nexec node '\(fixture.path)' \"$@\"\n",
+            node: "#!/bin/sh\n[ \"$PATH\" = '\(shellPath)' ] || exit 99\nexec /usr/bin/python3 \"$@\"\n",
+            shell: "#!/bin/sh\nexport ZDOTDIR='\(profiles.path)'\nexec /bin/zsh \"$@\"\n",
+        ]
+        for (url, contents) in scripts {
+            try contents.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        try "export PATH='\(shellPath)'\n".write(
+            to: profiles.appendingPathComponent(".zshrc"), atomically: true, encoding: .utf8
+        )
+        let cli = try #require(CodexCLIResolver.resolve(
+            environmentPath: "/usr/bin:/bin",
+            registeredApplicationURL: nil,
+            applicationDirectories: [],
+            shellExecutableURL: shell
+        ))
+        #expect(cli.executablePath == codex.path)
+        #expect(cli.environmentPath == shellPath)
+        let client = CodexAppServerClient(resolveCLI: { cli })
+        clients.append(client)
+
+        let version = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CodexCLIVersion, Error>) in
+            client.checkMinimumResetCreditsVersion { continuation.resume(with: $0) }
+        }
+        #expect(version == CodexAppServerClient.minimumResetCreditsVersion)
+        try await start(client)
+        let childPID = try await pid(client)
+        #expect(childPID > 0)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            client.stop { continuation.resume() }
+        }
     }
 
     @Test func pendingRequestLimitRejectsExcessWork() async throws {
