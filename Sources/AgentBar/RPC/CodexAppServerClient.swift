@@ -32,7 +32,7 @@ final class CodexAppServerClient {
     private let queue = DispatchQueue(label: "AgentBar.rpc", autoreleaseFrequency: .workItem)
     private let logger = Logger(subsystem: "com.lonewolfyx.AgentBar", category: "RPC")
     private let configuration: Configuration
-    private let resolveExecutablePath: @Sendable () -> String?
+    private let resolveCLI: @Sendable () -> CodexCLIResolver.ResolvedCLI?
     private let notificationLock = NSLock()
     private var queuedNotifications: [String: JSONDictionary] = [:]
     private var notificationDeliveryScheduled = false
@@ -49,16 +49,16 @@ final class CodexAppServerClient {
     private var pending: [Int: PendingRequest] = [:]
     private var initialized = false
     private var processStartedAt: Date?
-    private var selectedCodexPath: String?
+    private var selectedCLI: CodexCLIResolver.ResolvedCLI?
     private var selectedCodexVersion: CodexCLIVersion?
     private var initializationTimeoutWorkItem: DispatchWorkItem?
 
     init(
         configuration: Configuration = Configuration(),
-        resolveExecutablePath: @escaping @Sendable () -> String? = { CodexCLIResolver.resolve() }
+        resolveCLI: @escaping @Sendable () -> CodexCLIResolver.ResolvedCLI? = { CodexCLIResolver.resolve() }
     ) {
         self.configuration = configuration
-        self.resolveExecutablePath = resolveExecutablePath
+        self.resolveCLI = resolveCLI
     }
 
     deinit {
@@ -164,15 +164,15 @@ final class CodexAppServerClient {
 
     func checkMinimumResetCreditsVersion(completion: @escaping @Sendable (Result<CodexCLIVersion, Error>) -> Void) {
         queue.async {
-            self.selectedCodexPath = nil
+            self.selectedCLI = nil
             self.selectedCodexVersion = nil
-            guard let codexPath = self.resolveExecutablePath() else {
+            guard let cli = self.resolveCLI() else {
                 completion(.failure(QuotaError.codexCLINotFound))
                 return
             }
 
             do {
-                let version = try Self.readCodexCLIVersion(codexPath: codexPath, timeout: self.configuration.versionTimeout)
+                let version = try Self.readCodexCLIVersion(cli: cli, timeout: self.configuration.versionTimeout)
                 guard version >= Self.minimumResetCreditsVersion else {
                     completion(.failure(QuotaError.unsupportedCodexCLIVersion(
                         current: version.displayText,
@@ -181,9 +181,9 @@ final class CodexAppServerClient {
                     return
                 }
 
-                self.selectedCodexPath = codexPath
+                self.selectedCLI = cli
                 self.selectedCodexVersion = version
-                self.log("Selected Codex CLI \(codexPath) (\(version.displayText))")
+                self.log("Selected Codex CLI \(cli.executablePath) (\(version.displayText))")
                 completion(.success(version))
             } catch {
                 completion(.failure(error))
@@ -192,9 +192,10 @@ final class CodexAppServerClient {
     }
 
     private func launchProcess() throws {
-        guard let codexPath = selectedCodexPath ?? resolveExecutablePath() else {
+        guard let cli = selectedCLI ?? resolveCLI() else {
             throw QuotaError.codexCLINotFound
         }
+        let codexPath = cli.executablePath
 
         let process = Process()
         let inputPipe = Pipe()
@@ -203,7 +204,7 @@ final class CodexAppServerClient {
 
         process.executableURL = URL(fileURLWithPath: codexPath)
         process.arguments = configuration.arguments
-        process.environment = Self.makeProcessEnvironment(codexPath: codexPath)
+        process.environment = Self.makeProcessEnvironment(cli: cli)
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe
@@ -336,9 +337,9 @@ final class CodexAppServerClient {
     private func appServerDiagnosticMessageLocked(summary: String) -> String {
         var lines = [summary]
 
-        if let selectedCodexPath {
+        if let selectedCLI {
             let version = selectedCodexVersion.map { " (\($0.displayText))" } ?? ""
-            lines.append("Codex CLI: \(selectedCodexPath)\(version)")
+            lines.append("Codex CLI: \(selectedCLI.executablePath)\(version)")
         }
 
         let stderr = capturedStderr()
@@ -349,10 +350,15 @@ final class CodexAppServerClient {
         return lines.joined(separator: "\n")
     }
 
-    private static func makeProcessEnvironment(codexPath: String) -> [String: String] {
+    private static func makeProcessEnvironment(cli: CodexCLIResolver.ResolvedCLI) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
-        let codexBinDirectory = URL(fileURLWithPath: codexPath).deletingLastPathComponent().path
-        let defaultPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        if let environmentPath = cli.environmentPath {
+            environment["PATH"] = environmentPath
+            return environment
+        }
+
+        let codexBinDirectory = URL(fileURLWithPath: cli.executablePath).deletingLastPathComponent().path
+        let defaultPath = "/usr/bin:/bin:/usr/sbin:/sbin"
         let currentPath = environment["PATH"] ?? defaultPath
         let pathParts = ([codexBinDirectory] + currentPath.split(separator: ":").map(String.init))
             .reduce(into: [String]()) { result, path in
@@ -596,13 +602,13 @@ final class CodexAppServerClient {
         return Date().timeIntervalSince(processStartedAt) >= configuration.maximumProcessLifetime
     }
 
-    private static func readCodexCLIVersion(codexPath: String, timeout: TimeInterval) throws -> CodexCLIVersion {
+    private static func readCodexCLIVersion(cli: CodexCLIResolver.ResolvedCLI, timeout: TimeInterval) throws -> CodexCLIVersion {
         let process = Process()
         let outputPipe = Pipe()
 
-        process.executableURL = URL(fileURLWithPath: codexPath)
+        process.executableURL = URL(fileURLWithPath: cli.executablePath)
         process.arguments = ["--version"]
-        process.environment = makeProcessEnvironment(codexPath: codexPath)
+        process.environment = makeProcessEnvironment(cli: cli)
         process.standardOutput = outputPipe
         process.standardError = outputPipe
 

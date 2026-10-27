@@ -20,7 +20,7 @@ open -a AgentBar
 
 Agent Bar needs an available, signed-in Codex installation.
 
-Agent Bar locates the CLI by running `which codex` in your login interactive shell. If the shell lookup fails or times out, it checks the CLI bundled with the Codex or ChatGPT app.
+Agent Bar locates the CLI by running `which codex` in your login interactive shell and reuses that shell's PATH when checking the CLI version and starting the app server, so package-manager shims can also find Node.js. If the shell lookup fails or times out, it checks the CLI bundled with the Codex or ChatGPT app.
 
 ## Features
 
