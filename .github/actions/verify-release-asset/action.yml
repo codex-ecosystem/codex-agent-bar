@@ -1,0 +1,49 @@
+name: Verify published release asset
+description: Compare the uploaded DMG with the verified local build and expose its Homebrew metadata.
+inputs:
+  dmg-path:
+    description: Verified local DMG path.
+    required: true
+  dmg-name:
+    description: GitHub release asset filename.
+    required: true
+  release-tag:
+    description: GitHub release tag.
+    required: true
+  github-token:
+    description: Token with read access to the source release.
+    required: true
+outputs:
+  sha256:
+    description: Verified uploaded DMG SHA-256.
+    value: ${{ steps.verify.outputs.sha256 }}
+  download-url:
+    description: Verified release download URL.
+    value: ${{ steps.verify.outputs.download_url }}
+runs:
+  using: composite
+  steps:
+    - name: Verify uploaded DMG
+      id: verify
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+        DMG_PATH: ${{ inputs.dmg-path }}
+        DMG_NAME: ${{ inputs.dmg-name }}
+      run: |
+        set -euo pipefail
+
+        published_dir="$(mktemp -d "$RUNNER_TEMP/agentbar-release.XXXXXX")"
+        trap 'rm -rf "$published_dir"' EXIT
+        gh release download "$RELEASE_TAG" --pattern "$DMG_NAME" --dir "$published_dir"
+
+        local_sha256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
+        published_sha256="$(shasum -a 256 "$published_dir/$DMG_NAME" | awk '{print $1}')"
+        if [ "$local_sha256" != "$published_sha256" ]; then
+          echo "::error::The published DMG does not match the verified local build."
+          exit 1
+        fi
+
+        echo "sha256=$published_sha256" >> "$GITHUB_OUTPUT"
+        echo "download_url=https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$DMG_NAME" >> "$GITHUB_OUTPUT"
